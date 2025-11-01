@@ -50,17 +50,28 @@ class Game extends Phaser.Scene {
                     description: 'Very high damage, small explosion'
                 }
             ],
-            selectedWeapon: 0
+            selectedWeapon: 0,
+            movementUsed: false,
+            actionUsed: false
         };
 
         this.aimAngle = 0;
         this.aimPower = 50;
         this.trajectory = null;
+        this.projectile = null;
+        this.activeHighlight = null;
+        this.turnTimer = null;
         
-        // NEW: Terrain system
-        this.terrain = null;
         this.terrainGraphics = null;
-        this.terrainData = null;
+        this.terrainColliders = [];
+        this.holes = [];
+        
+        // Track character ground states
+        this.characterOnGround = {
+            cat: false,
+            dog: false,
+            duck: false
+        };
     }
 
     create() {
@@ -72,8 +83,7 @@ class Game extends Phaser.Scene {
         this.cameras.main.setBackgroundColor('#87CEEB');
         this.physics.world.setBounds(0, 0, this.gameWidth, this.gameHeight);
         
-        // NEW: Create destructible terrain instead of simple ground
-        this.createTerrain();
+        this.createSimpleTerrain();
         this.createAnimals();
         this.setupInput();
         this.createUI();
@@ -85,232 +95,343 @@ class Game extends Phaser.Scene {
         if (this.gameState.phase === 'aiming' && this.trajectory) {
             this.updateTrajectory();
         }
+        
+        this.checkCharacterFalling();
+        this.applyFriction();
+        this.updateGroundDetection();
     }
 
-    // NEW: TERRAIN SYSTEM
-    createTerrain() {
-        const terrainWidth = this.gameWidth;
-        const terrainHeight = 200;
-        const groundLevel = this.gameHeight - 100;
-        
-        // Create terrain data (2D array representing solid/empty)
-        this.terrainData = [];
-        for (let x = 0; x < terrainWidth; x++) {
-            this.terrainData[x] = [];
-            for (let y = 0; y < terrainHeight; y++) {
-                // Create a hilly landscape
-                const height = groundLevel + Math.sin(x * 0.02) * 30 + Math.random() * 10;
-                this.terrainData[x][y] = (y + this.gameHeight - terrainHeight) > height;
+    // Ground detection using raycasting
+    updateGroundDetection() {
+        const characters = [
+            { char: this.cat, name: 'cat' },
+            { char: this.dog, name: 'dog' },
+            { char: this.duck, name: 'duck' }
+        ];
+
+        characters.forEach(({ char, name }) => {
+            if (!char || !char.body) {
+                this.characterOnGround[name] = false;
+                return;
             }
+
+            // Use raycasting to detect ground below character
+            const rayLength = 25;
+            const startX = char.x;
+            const startY = char.y + char.radius;
+            const endY = startY + rayLength;
+
+            let onGround = false;
+
+            // Check against all terrain segments
+            for (const segment of this.terrainColliders) {
+                if (segment.destroyed || !segment.graphic) continue;
+
+                // Simple AABB collision check for ground detection
+                const charBottom = char.y + char.radius;
+                const segmentTop = segment.y - segment.height / 2;
+                
+                // Check if character is within segment's horizontal bounds and close to the top
+                if (Math.abs(charBottom - segmentTop) < 15 && 
+                    char.x > segment.x - segment.width / 2 && 
+                    char.x < segment.x + segment.width / 2) {
+                    onGround = true;
+                    break;
+                }
+            }
+
+            this.characterOnGround[name] = onGround;
+        });
+    }
+
+    // Check if specific character is on ground
+    isCharacterOnGround(character) {
+        if (character === this.cat) return this.characterOnGround.cat;
+        if (character === this.dog) return this.characterOnGround.dog;
+        if (character === this.duck) return this.characterOnGround.duck;
+        return false;
+    }
+
+    applyFriction() {
+        const characters = [this.cat, this.dog, this.duck];
+        characters.forEach(character => {
+            if (character && character.body) {
+                // Apply friction only when on ground
+                if (this.isCharacterOnGround(character)) {
+                    // Gradually reduce horizontal velocity
+                    character.body.velocity.x *= 0.92;
+                    
+                    // Stop completely if moving very slowly
+                    if (Math.abs(character.body.velocity.x) < 5) {
+                        character.body.velocity.x = 0;
+                    }
+                }
+            }
+        });
+    }
+
+    // TERRAIN METHODS
+    createSimpleTerrain() {
+        this.terrainGraphics = this.add.graphics();
+        this.terrainColliders = [];
+        
+        const groundY = this.gameHeight - 100;
+        const segmentWidth = 20;
+        
+        for (let x = 0; x < this.gameWidth; x += segmentWidth) {
+            const segment = this.add.rectangle(
+                x + segmentWidth / 2, 
+                groundY + 50,
+                segmentWidth, 
+                100, 
+                0x228B22, 
+                0
+            );
+            
+            this.physics.add.existing(segment, true);
+            this.terrainColliders.push({
+                graphic: segment,
+                x: x + segmentWidth / 2,
+                y: groundY + 50,
+                width: segmentWidth,
+                height: 100,
+                destroyed: false
+            });
         }
         
-        // Create terrain graphics
-        this.terrainGraphics = this.add.graphics();
+        this.addRealHills();
         this.drawTerrain();
+    }
+
+    addRealHills() {
+        const groundY = this.gameHeight - 100;
         
-        // Create terrain physics body
-        this.terrain = this.add.rectangle(terrainWidth / 2, this.gameHeight - terrainHeight / 2, terrainWidth, terrainHeight, 0x228B22, 0);
-        this.physics.add.existing(this.terrain, true);
+        const hillData = [
+            { x: 150, width: 120, height: 60 },
+            { x: this.gameWidth / 2, width: 100, height: 40 },
+            { x: this.gameWidth - 150, width: 120, height: 60 }
+        ];
+        
+        hillData.forEach(hill => {
+            const hillBody = this.add.rectangle(
+                hill.x, 
+                groundY - hill.height / 2, 
+                hill.width, 
+                hill.height, 
+                0x1e7a1e, 
+                0
+            );
+            
+            this.physics.add.existing(hillBody, true);
+            this.terrainColliders.push({
+                graphic: hillBody,
+                x: hill.x,
+                y: groundY - hill.height / 2,
+                width: hill.width,
+                height: hill.height,
+                destroyed: false,
+                isHill: true
+            });
+        });
     }
 
     drawTerrain() {
         this.terrainGraphics.clear();
-        this.terrainGraphics.fillStyle(0x228B22, 1);
         
-        const terrainHeight = 200;
-        
-        for (let x = 0; x < this.terrainData.length; x++) {
-            for (let y = 0; y < this.terrainData[x].length; y++) {
-                if (this.terrainData[x][y]) {
-                    this.terrainGraphics.fillRect(x, y + (this.gameHeight - terrainHeight), 1, 1);
+        this.terrainColliders.forEach(segment => {
+            if (!segment.destroyed) {
+                if (segment.isHill) {
+                    this.terrainGraphics.fillStyle(0x1e7a1e, 1);
+                    this.terrainGraphics.fillRect(
+                        segment.x - segment.width / 2,
+                        segment.y - segment.height / 2,
+                        segment.width,
+                        segment.height
+                    );
+                } else {
+                    this.terrainGraphics.fillStyle(0x228B22, 1);
+                    this.terrainGraphics.fillRect(
+                        segment.x - segment.width / 2,
+                        segment.y - segment.height / 2,
+                        segment.width,
+                        segment.height
+                    );
                 }
             }
-        }
+        });
     }
 
-    // NEW: Destroy terrain in a circular area
     destroyTerrain(centerX, centerY, radius) {
-        let destroyedAny = false;
-        const terrainHeight = 200;
-        const startY = this.gameHeight - terrainHeight;
+        console.log(`Destroy terrain at (${Math.floor(centerX)}, ${Math.floor(centerY)}) radius ${radius}`);
         
-        for (let x = Math.max(0, centerX - radius); x <= Math.min(this.terrainData.length - 1, centerX + radius); x++) {
-            for (let y = Math.max(0, centerY - startY - radius); y <= Math.min(terrainHeight - 1, centerY - startY + radius); y++) {
-                const distance = Phaser.Math.Distance.Between(centerX, centerY, x, startY + y);
-                if (distance <= radius && this.terrainData[x][y]) {
-                    this.terrainData[x][y] = false;
-                    destroyedAny = true;
+        let destroyedAny = false;
+        
+        this.terrainColliders.forEach(segment => {
+            if (segment.destroyed) return;
+            
+            const distance = Phaser.Math.Distance.Between(centerX, centerY, segment.x, segment.y);
+            const maxDimension = Math.max(segment.width, segment.height);
+            
+            if (distance < radius + maxDimension / 2) {
+                segment.destroyed = true;
+                if (segment.graphic) {
+                    segment.graphic.destroy();
                 }
+                destroyedAny = true;
             }
-        }
+        });
         
         if (destroyedAny) {
             this.drawTerrain();
-            console.log(`Destroyed terrain at (${centerX}, ${centerY}) with radius ${radius}`);
+            this.setupTerrainCollisions();
         }
         
         return destroyedAny;
     }
 
-    // NEW: Check if a point is on solid ground
-    isSolid(x, y) {
-        const terrainHeight = 200;
-        const terrainY = this.gameHeight - terrainHeight;
+    checkCharacterFalling() {
+        const characters = [this.cat, this.dog, this.duck];
+        const groundY = this.gameHeight - 100;
         
-        if (x < 0 || x >= this.terrainData.length || y < terrainY || y >= this.gameHeight) {
-            return false;
-        }
-        
-        const dataX = Math.floor(x);
-        const dataY = Math.floor(y - terrainY);
-        
-        return this.terrainData[dataX] && this.terrainData[dataX][dataY];
-    }
-
-    // UPDATED: Character creation with terrain positioning
-    createAnimals() {
-        const animalSize = 20; // Smaller for terrain
-        
-        // Find safe positions on terrain
-        const positions = this.findSafePositions(3, animalSize);
-        
-        this.cat = this.add.circle(positions[0].x, positions[0].y, animalSize, 0xff6b6b);
-        this.physics.add.existing(this.cat);
-        this.cat.body.setCollideWorldBounds(true);
-        this.cat.body.setBounce(0.2);
-
-        this.dog = this.add.circle(positions[1].x, positions[1].y, animalSize, 0x4ecdc4);
-        this.physics.add.existing(this.dog);
-        this.dog.body.setCollideWorldBounds(true);
-        this.dog.body.setBounce(0.2);
-
-        this.duck = this.add.circle(positions[2].x, positions[2].y, animalSize, 0xffe66d);
-        this.physics.add.existing(this.duck);
-        this.duck.body.setCollideWorldBounds(true);
-        this.duck.body.setBounce(0.2);
-
-        // Characters collide with terrain
-        this.setupTerrainCollision();
-    }
-
-    // NEW: Find safe positions on terrain
-    findSafePositions(count, radius) {
-        const positions = [];
-        const terrainHeight = 200;
-        const startY = this.gameHeight - terrainHeight;
-        
-        for (let i = 0; i < count; i++) {
-            let x, y;
-            let attempts = 0;
-            let validPosition = false;
+        characters.forEach(character => {
+            if (!character.body) return;
             
-            while (!validPosition && attempts < 100) {
-                x = 100 + (this.gameWidth - 200) * (i / (count - 1 || 1));
-                y = startY;
-                
-                // Find the highest solid point at this x position
-                for (let checkY = terrainHeight - 1; checkY >= 0; checkY--) {
-                    if (this.terrainData[Math.floor(x)][checkY]) {
-                        y = startY + checkY - radius - 2; // Position above terrain
-                        validPosition = true;
-                        break;
-                    }
-                }
-                
-                // Check if position is far enough from others
-                if (validPosition) {
-                    for (const pos of positions) {
-                        if (Phaser.Math.Distance.Between(x, y, pos.x, pos.y) < radius * 4) {
-                            validPosition = false;
-                            break;
-                        }
-                    }
-                }
-                
-                attempts++;
-            }
+            const isOnGround = this.isCharacterOnGround(character);
             
-            if (validPosition) {
-                positions.push({ x, y });
+            if (!isOnGround) {
+                character.body.setGravityY(400);
             } else {
-                // Fallback position
-                positions.push({ x: 100 + i * 200, y: this.gameHeight - 150 });
+                character.body.setGravityY(0);
+                character.body.setVelocityY(0);
             }
-        }
-        
-        return positions;
-    }
-
-    // NEW: Setup terrain collision using overlap checking
-    setupTerrainCollision() {
-        this.physics.add.overlap([this.cat, this.dog, this.duck], this.terrain, (character, terrain) => {
-            this.handleTerrainCollision(character);
+            
+            if (character.y > this.gameHeight + 100) {
+                this.respawnCharacter(character);
+            }
         });
     }
 
-    // NEW: Handle terrain collision
-    handleTerrainCollision(character) {
-        if (!character.body) return;
+    respawnCharacter(character) {
+        const groundY = this.gameHeight - 100;
         
-        const radius = character.radius || 20;
-        const bottom = character.y + radius;
-        const left = character.x - radius;
-        const right = character.x + radius;
+        let safeX, safeY;
+        let attempts = 0;
         
-        // Check if character is standing on terrain
-        if (this.isSolid(character.x, bottom + 1) || 
-            this.isSolid(left, bottom + 1) || 
-            this.isSolid(right, bottom + 1)) {
-            
-            // Stop falling
-            character.body.setVelocityY(0);
-            
-            // Position character on top of terrain
-            let surfaceY = bottom;
-            for (let y = bottom; y >= character.y - radius; y--) {
-                if (this.isSolid(character.x, y) || this.isSolid(left, y) || this.isSolid(right, y)) {
-                    surfaceY = Math.min(surfaceY, y);
-                }
-            }
-            character.y = surfaceY - radius - 1;
-        }
+        do {
+            safeX = Phaser.Math.Between(50, this.gameWidth - 50);
+            safeY = groundY - 30;
+            attempts++;
+        } while (attempts < 20);
         
-        // Check side collisions
-        if (this.isSolid(left - 1, character.y) || this.isSolid(right + 1, character.y)) {
-            character.body.setVelocityX(0);
-        }
+        character.x = safeX;
+        character.y = safeY;
+        character.body.setVelocity(0, 0);
+        character.body.setGravityY(0);
+        
+        console.log(`Respawned character at (${safeX}, ${safeY})`);
     }
 
-    // UPDATED: Enhanced explosion with terrain destruction
+    // CHARACTER METHODS
+    createAnimals() {
+        const animalSize = 20;
+        const groundY = this.gameHeight - 100;
+        
+        const positions = [
+            { x: 150, y: groundY - 90 },
+            { x: this.gameWidth / 2, y: groundY - 70 },
+            { x: this.gameWidth - 150, y: groundY - 90 }
+        ];
+        
+        // Cat
+        this.cat = this.add.circle(positions[0].x, positions[0].y, animalSize, 0xff6b6b);
+        this.physics.add.existing(this.cat);
+        this.cat.body.setCollideWorldBounds(true);
+        this.cat.body.setBounce(0.3);
+        this.cat.body.setGravityY(400);
+
+        // Dog
+        this.dog = this.add.circle(positions[1].x, positions[1].y, animalSize, 0x4ecdc4);
+        this.physics.add.existing(this.dog);
+        this.dog.body.setCollideWorldBounds(true);
+        this.dog.body.setBounce(0.3);
+        this.dog.body.setGravityY(400);
+
+        // Duck
+        this.duck = this.add.circle(positions[2].x, positions[2].y, animalSize, 0xffe66d);
+        this.physics.add.existing(this.duck);
+        this.duck.body.setCollideWorldBounds(true);
+        this.duck.body.setBounce(0.3);
+        this.duck.body.setGravityY(400);
+
+        this.setupTerrainCollisions();
+    }
+
+    setupTerrainCollisions() {
+        const characters = [this.cat, this.dog, this.duck];
+        
+        characters.forEach(character => {
+            this.terrainColliders.forEach(segment => {
+                if (!segment.destroyed && segment.graphic) {
+                    this.physics.add.collider(character, segment.graphic);
+                }
+            });
+        });
+    }
+
+    // WEAPON & EXPLOSION METHODS - ADDED MISSING METHODS
     createExplosion(x, y, weapon) {
-        // Destroy terrain
+        console.log(`Creating explosion at (${x}, ${y}) with ${weapon.name}`);
+        
         const terrainDestroyed = this.destroyTerrain(x, y, weapon.explosionRadius);
         
-        // Explosion effect
-        const explosion = this.add.circle(x, y, 5, weapon.color);
+        // Bigger, more visible explosion
+        const explosion = this.add.circle(x, y, 10, weapon.color);
         this.tweens.add({
             targets: explosion,
             radius: weapon.explosionRadius,
             alpha: 0,
-            duration: 400,
+            duration: 500,
+            ease: 'Power2',
             onComplete: () => explosion.destroy()
         });
         
-        // Particle effect for terrain destruction
+        // Add explosion particles for better visibility
+        this.createExplosionParticles(x, y, weapon.color);
+        
         if (terrainDestroyed) {
             this.createDebris(x, y, weapon.explosionRadius);
         }
         
-        // Apply area damage
         this.applyAreaDamage(x, y, weapon.explosionRadius, weapon.damage);
-        
-        // Apply explosion force to characters
         this.applyExplosionForce(x, y, weapon.explosionRadius);
     }
 
-    // NEW: Create debris particles when terrain is destroyed
+    createExplosionParticles(x, y, color) {
+        const particleCount = 12;
+        
+        for (let i = 0; i < particleCount; i++) {
+            const angle = (i / particleCount) * Math.PI * 2;
+            const distance = Phaser.Math.Between(10, 40);
+            const particle = this.add.circle(
+                x + Math.cos(angle) * distance,
+                y + Math.sin(angle) * distance,
+                3, color
+            );
+            
+            this.tweens.add({
+                targets: particle,
+                x: x + Math.cos(angle) * distance * 3,
+                y: y + Math.sin(angle) * distance * 3,
+                alpha: 0,
+                duration: 600,
+                ease: 'Power2',
+                onComplete: () => particle.destroy()
+            });
+        }
+    }
+
     createDebris(x, y, radius) {
-        const debrisCount = Phaser.Math.Between(10, 20);
+        const debrisCount = Phaser.Math.Between(5, 10);
         
         for (let i = 0; i < debrisCount; i++) {
             const debris = this.add.rectangle(
@@ -321,86 +442,157 @@ class Game extends Phaser.Scene {
             
             this.physics.add.existing(debris);
             debris.body.setVelocity(
-                Phaser.Math.Between(-100, 100),
-                Phaser.Math.Between(-200, -50)
+                Phaser.Math.Between(-200, 200),
+                Phaser.Math.Between(-300, -100)
             );
-            debris.body.setGravityY(300);
+            debris.body.setGravityY(400);
             
-            // Remove debris after a while
-            this.time.delayedCall(Phaser.Math.Between(1000, 3000), () => {
-                debris.destroy();
+            this.time.delayedCall(Phaser.Math.Between(1000, 2000), () => {
+                if (debris && debris.body) {
+                    debris.destroy();
+                }
             });
         }
     }
 
-    // NEW: Apply explosion force to characters
     applyExplosionForce(centerX, centerY, radius) {
         const characters = [this.cat, this.dog, this.duck];
+        const forceMultiplier = 400;
         
         characters.forEach(character => {
             if (!character.body) return;
             
             const distance = Phaser.Math.Distance.Between(centerX, centerY, character.x, character.y);
             if (distance <= radius) {
-                const force = (1 - (distance / radius)) * 500;
+                const force = (1 - (distance / radius)) * forceMultiplier;
                 const angle = Phaser.Math.Angle.Between(centerX, centerY, character.x, character.y);
                 
                 character.body.setVelocity(
                     Math.cos(angle) * force,
                     Math.sin(angle) * force
                 );
+                
+                character.body.setGravityY(300);
             }
         });
     }
 
-    // UPDATED: Trajectory calculation considers terrain
-    calculateTrajectory(startX, startY, angle, power, steps) {
-        const points = [];
-        const gravity = 300;
-        const timeStep = 0.08;
+    applyAreaDamage(centerX, centerY, radius, damage) {
+        const characters = [this.cat, this.dog, this.duck];
         
-        const weapon = this.gameState.weapons[this.gameState.selectedWeapon];
-        const velocity = power * 6 * weapon.projectileSpeed;
-        
-        const angleRad = Phaser.Math.DegToRad(angle);
-        const velocityX = Math.cos(angleRad) * velocity;
-        const velocityY = Math.sin(angleRad) * velocity;
-        
-        let x = startX;
-        let y = startY;
-        let t = 0;
-        
-        for (let i = 0; i < steps; i++) {
-            points.push({ x: x, y: y });
-            
-            t += timeStep;
-            x = startX + velocityX * t;
-            y = startY + velocityY * t + 0.5 * gravity * t * t;
-            
-            // Stop if hits terrain or goes out of bounds
-            if (this.isSolid(x, y) || y > this.gameHeight || x < 0 || x > this.gameWidth) {
-                break;
+        characters.forEach((char, index) => {
+            const distance = Phaser.Math.Distance.Between(centerX, centerY, char.x, char.y);
+            if (distance <= radius) {
+                const distanceFactor = 1 - (distance / radius);
+                const actualDamage = Math.floor(damage * distanceFactor);
+                this.gameState.characterHealth[index] = Math.max(0, this.gameState.characterHealth[index] - actualDamage);
+                console.log(`Character ${index} took ${actualDamage} area damage!`);
             }
-        }
+        });
         
-        return points;
+        this.updateHealthDisplay();
+        this.checkGameOver();
     }
 
-    // KEEP ALL OTHER METHODS THE SAME (they should work with the new terrain)
+    // INPUT METHODS
+    setupInput() {
+        this.cursors = this.input.keyboard.createCursorKeys();
+        this.spacebar = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+        this.enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+        this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
+        
+        // MOVING PHASE
+        this.cursors.left.on('down', () => {
+            if (this.gameState.phase === 'moving') {
+                const activeChar = this.getActiveCharacter();
+                if (activeChar && activeChar.body) {
+                    activeChar.body.setVelocityX(-300);
+                }
+            }
+        });
+
+        this.cursors.right.on('down', () => {
+            if (this.gameState.phase === 'moving') {
+                const activeChar = this.getActiveCharacter();
+                if (activeChar && activeChar.body) {
+                    activeChar.body.setVelocityX(300);
+                }
+            }
+        });
+
+        this.cursors.up.on('down', () => {
+            if (this.gameState.phase === 'moving') {
+                const activeChar = this.getActiveCharacter();
+                if (activeChar && activeChar.body) {
+                    // Always allow jump for testing
+                    console.log('JUMP!');
+                    activeChar.body.setVelocityY(-550);
+                    
+                    // Visual feedback for jump
+                    this.tweens.add({
+                        targets: activeChar,
+                        scaleX: 1.2,
+                        scaleY: 0.8,
+                        duration: 100,
+                        yoyo: true,
+                        ease: 'Power2'
+                    });
+                }
+            }
+        });
+        
+        // SPACE: Switch phases or fire
+        this.spacebar.on('down', () => {
+            if (this.gameState.phase === 'moving') {
+                this.startAimingPhase();
+            } else if (this.gameState.phase === 'aiming') {
+                this.fireWeapon();
+            }
+        });
+
+        // ENTER or W: Switch weapons
+        this.enterKey.on('down', () => {
+            if (this.gameState.phase === 'aiming') {
+                this.switchWeapon();
+            }
+        });
+        
+        this.keyW.on('down', () => {
+            if (this.gameState.phase === 'aiming') {
+                this.switchWeapon();
+            }
+        });
+
+        // AIMING PHASE
+        this.cursors.left.on('down', () => {
+            if (this.gameState.phase === 'aiming') this.adjustAim(-5);
+        });
+        
+        this.cursors.right.on('down', () => {
+            if (this.gameState.phase === 'aiming') this.adjustAim(5);
+        });
+        
+        this.cursors.up.on('down', () => {
+            if (this.gameState.phase === 'aiming') this.adjustPower(10);
+        });
+        
+        this.cursors.down.on('down', () => {
+            if (this.gameState.phase === 'aiming') this.adjustPower(-10);
+        });
+    }
+
+    // TURN & AIMING METHODS
     startTurn() {
         const player = this.gameState.players[this.gameState.currentPlayer];
         const characterIndex = player.characters[player.activeCharacter];
-        const activeChar = this.getActiveCharacter();
         
         console.log(`Start Turn: ${player.name} - Character ${characterIndex + 1}`);
         
         this.gameState.phase = 'moving';
         this.gameState.timeRemaining = this.gameState.turnTime;
         this.aimPower = 50;
-        
-        if (activeChar) {
-            this.aimAngle = (activeChar.x < this.gameWidth / 2) ? 45 : 135;
-        }
+
+        this.gameState.actionUsed = false;
         
         this.clearTrajectory();
         this.highlightActiveCharacter(characterIndex);
@@ -416,6 +608,7 @@ class Game extends Phaser.Scene {
 
     startAimingPhase() {
         console.log('Starting aiming phase');
+        
         this.gameState.phase = 'aiming';
         this.createTrajectory();
         this.updateUI();
@@ -462,6 +655,37 @@ class Game extends Phaser.Scene {
         this.trajectory.fillCircle(endPoint.x, endPoint.y, 4);
     }
 
+    calculateTrajectory(startX, startY, angle, power, steps) {
+        const points = [];
+        const gravity = 300;
+        const timeStep = 0.08;
+        
+        const weapon = this.gameState.weapons[this.gameState.selectedWeapon];
+        const velocity = power * 6 * weapon.projectileSpeed;
+        
+        const angleRad = Phaser.Math.DegToRad(angle);
+        const velocityX = Math.cos(angleRad) * velocity;
+        const velocityY = Math.sin(angleRad) * velocity;
+        
+        let x = startX;
+        let y = startY;
+        let t = 0;
+        
+        for (let i = 0; i < steps; i++) {
+            points.push({ x: x, y: y });
+            
+            t += timeStep;
+            x = startX + velocityX * t;
+            y = startY + velocityY * t + 0.5 * gravity * t * t;
+            
+            if (y > this.gameHeight || x < 0 || x > this.gameWidth) {
+                break;
+            }
+        }
+        
+        return points;
+    }
+
     switchWeapon() {
         this.gameState.selectedWeapon = (this.gameState.selectedWeapon + 1) % this.gameState.weapons.length;
         const weapon = this.gameState.weapons[this.gameState.selectedWeapon];
@@ -492,16 +716,16 @@ class Game extends Phaser.Scene {
             return;
         }
         
+        this.gameState.actionUsed = true;
         weapon.ammo--;
         
-        console.log(`Firing ${weapon.name}! Angle: ${this.aimAngle}°, Power: ${this.aimPower}%`);
-        
-        this.clearTrajectory();
         this.gameState.phase = 'firing';
+        this.clearTrajectory();
+        this.createProjectile();
+        
         this.updateUI();
         
-        this.createProjectile();
-        this.time.delayedCall(3000, this.endTurn, [], this);
+        this.time.delayedCall(2000, this.endTurn, [], this);
     }
 
     createProjectile() {
@@ -510,11 +734,11 @@ class Game extends Phaser.Scene {
         
         if (!activeChar) return;
         
-        this.projectile = this.add.circle(activeChar.x, activeChar.y, 6, weapon.color);
+        this.projectile = this.add.circle(activeChar.x, activeChar.y, 8, weapon.color);
         this.physics.add.existing(this.projectile);
         
         const angleRad = Phaser.Math.DegToRad(this.aimAngle);
-        const velocity = this.aimPower * 6 * weapon.projectileSpeed;
+        const velocity = this.aimPower * 8 * weapon.projectileSpeed;
         const velocityX = Math.cos(angleRad) * velocity;
         const velocityY = Math.sin(angleRad) * velocity;
         
@@ -522,22 +746,50 @@ class Game extends Phaser.Scene {
         this.projectile.body.setBounce(0.3);
         this.projectile.body.setCollideWorldBounds(true);
         
-        // NEW: Projectile collision with terrain
-        this.physics.add.overlap(this.projectile, this.terrain, (projectile, terrain) => {
-            if (this.isSolid(projectile.x, projectile.y)) {
-                this.createExplosion(projectile.x, projectile.y, weapon);
-                projectile.destroy();
+        console.log(`Projectile created with velocity (${velocityX}, ${velocityY})`);
+        
+        // Terrain collision
+        this.terrainColliders.forEach(segment => {
+            if (!segment.destroyed && segment.graphic) {
+                this.physics.add.collider(this.projectile, segment.graphic, () => {
+                    this.handleProjectileImpact(weapon);
+                });
             }
         });
         
         // Character collision
-        this.physics.add.collider(this.projectile, [this.cat, this.dog, this.duck], (projectile, character) => {
-            this.createExplosion(projectile.x, projectile.y, weapon);
-            this.applyDamageToCharacter(character, weapon.damage);
-            projectile.destroy();
+        const characters = [this.cat, this.dog, this.duck];
+        characters.forEach(character => {
+            this.physics.add.collider(this.projectile, character, () => {
+                this.handleProjectileImpact(weapon, character);
+            });
+        });
+        
+        // Auto-destruct timer
+        this.time.delayedCall(5000, () => {
+            if (this.projectile) {
+                this.handleProjectileImpact(weapon);
+            }
         });
     }
 
+    handleProjectileImpact(weapon, character = null) {
+        if (!this.projectile) return;
+        
+        const impactX = this.projectile.x;
+        const impactY = this.projectile.y;
+        
+        this.createExplosion(impactX, impactY, weapon);
+        
+        if (character) {
+            this.applyDamageToCharacter(character, weapon.damage);
+        }
+        
+        this.projectile.destroy();
+        this.projectile = null;
+    }
+
+    // DAMAGE METHODS
     applyDamageToCharacter(character, damage) {
         const characterIndex = this.getCharacterIndex(character);
         if (characterIndex !== -1) {
@@ -553,23 +805,8 @@ class Game extends Phaser.Scene {
             });
             
             this.updateHealthDisplay();
+            this.checkGameOver();
         }
-    }
-
-    applyAreaDamage(centerX, centerY, radius, damage) {
-        const characters = [this.cat, this.dog, this.duck];
-        
-        characters.forEach((char, index) => {
-            const distance = Phaser.Math.Distance.Between(centerX, centerY, char.x, char.y);
-            if (distance <= radius) {
-                const distanceFactor = 1 - (distance / radius);
-                const actualDamage = Math.floor(damage * distanceFactor);
-                this.gameState.characterHealth[index] = Math.max(0, this.gameState.characterHealth[index] - actualDamage);
-                console.log(`Character ${index} took ${actualDamage} area damage!`);
-            }
-        });
-        
-        this.updateHealthDisplay();
     }
 
     getCharacterIndex(character) {
@@ -577,89 +814,7 @@ class Game extends Phaser.Scene {
         return characters.indexOf(character);
     }
 
-    clearTrajectory() {
-        if (this.trajectory) {
-            this.trajectory.destroy();
-            this.trajectory = null;
-        }
-    }
-
-    // KEEP ALL REMAINING METHODS THE SAME (input, UI, turn management, etc.)
-    setupInput() {
-        this.cursors = this.input.keyboard.createCursorKeys();
-        this.spacebar = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-        this.enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
-        this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
-        
-        // MOVING PHASE
-        this.cursors.left.on('down', () => {
-            if (this.gameState.phase === 'moving') this.moveActiveCharacter(-50, 0);
-        });
-        
-        this.cursors.right.on('down', () => {
-            if (this.gameState.phase === 'moving') this.moveActiveCharacter(50, 0);
-        });
-        
-        this.cursors.up.on('down', () => {
-            if (this.gameState.phase === 'moving') this.moveActiveCharacter(0, -200);
-        });
-        
-        // SPACE: Switch phases or fire
-        this.spacebar.on('down', () => {
-            if (this.gameState.phase === 'moving') {
-                this.startAimingPhase();
-            } else if (this.gameState.phase === 'aiming') {
-                this.fireWeapon();
-            }
-        });
-
-        // ENTER or W: Switch weapons
-        this.enterKey.on('down', () => {
-            if (this.gameState.phase === 'aiming') {
-                this.switchWeapon();
-            }
-        });
-        
-        this.keyW.on('down', () => {
-            if (this.gameState.phase === 'aiming') {
-                this.switchWeapon();
-            }
-        });
-
-        // AIMING PHASE
-        this.cursors.left.on('down', () => {
-            if (this.gameState.phase === 'aiming') this.adjustAim(-3);
-        });
-        
-        this.cursors.right.on('down', () => {
-            if (this.gameState.phase === 'aiming') this.adjustAim(3);
-        });
-        
-        this.cursors.up.on('down', () => {
-            if (this.gameState.phase === 'aiming') this.adjustPower(5);
-        });
-        
-        this.cursors.down.on('down', () => {
-            if (this.gameState.phase === 'aiming') this.adjustPower(-5);
-        });
-    }
-
-    getActiveCharacter() {
-        const player = this.gameState.players[this.gameState.currentPlayer];
-        const characterIndex = player.characters[player.activeCharacter];
-        const characters = [this.cat, this.dog, this.duck];
-        return characters[characterIndex];
-    }
-
-    moveActiveCharacter(x, y) {
-        const activeChar = this.getActiveCharacter();
-        if (activeChar && activeChar.body) {
-            if (x !== 0) activeChar.body.setVelocityX(x);
-            if (y !== 0) activeChar.body.setVelocityY(y);
-        }
-    }
-
-    // UI METHODS (keep the same)
+    // UI METHODS
     createUI() {
         this.createTurnDisplay();
         this.createHealthDisplay();
@@ -733,7 +888,7 @@ class Game extends Phaser.Scene {
         
         if (this.instructionText) {
             if (this.gameState.phase === 'moving') {
-                this.instructionText.setText('ARROWS: Move | SPACE: Start Aiming');
+                this.instructionText.setText(`ARROWS: Move Freely | SPACE: Start Aiming`);
             } else if (this.gameState.phase === 'aiming') {
                 this.instructionText.setText(`ANGLE: ${this.aimAngle}° | POWER: ${this.aimPower}% | ARROWS: Adjust | SPACE: Fire | ENTER/W: Switch Weapon`);
             } else if (this.gameState.phase === 'firing') {
@@ -756,7 +911,7 @@ class Game extends Phaser.Scene {
             fill: '#e74c3c'
         });
         
-        this.instructionText = this.add.text(padding, padding + 60, 'ARROWS: Move | SPACE: Start Aiming', {
+        this.instructionText = this.add.text(padding, padding + 60, 'ARROWS: Move Freely | SPACE: Start Aiming', {
             font: `${fontSize}px Arial`,
             fill: '#7f8c8d'
         });
@@ -792,12 +947,23 @@ class Game extends Phaser.Scene {
         }
     }
 
-    // TURN MANAGEMENT (keep the same)
+    // TURN MANAGEMENT
     endTurn() {
         console.log('Ending turn');
-        if (this.turnTimer) this.turnTimer.remove();
+        
+        if (this.turnTimer) {
+            this.turnTimer.remove();
+            this.turnTimer = null;
+        }
+        
         this.removeCharacterHighlight();
         this.clearTrajectory();
+        
+        if (this.projectile) {
+            this.projectile.destroy();
+            this.projectile = null;
+        }
+        
         this.nextTurn();
     }
 
@@ -827,6 +993,20 @@ class Game extends Phaser.Scene {
         }
     }
 
+    getActiveCharacter() {
+        const player = this.gameState.players[this.gameState.currentPlayer];
+        const characterIndex = player.characters[player.activeCharacter];
+        const characters = [this.cat, this.dog, this.duck];
+        return characters[characterIndex];
+    }
+
+    clearTrajectory() {
+        if (this.trajectory) {
+            this.trajectory.destroy();
+            this.trajectory = null;
+        }
+    }
+
     updateTimer() {
         if (this.gameState.phase === 'moving' || this.gameState.phase === 'aiming') {
             this.gameState.timeRemaining -= 1;
@@ -838,9 +1018,26 @@ class Game extends Phaser.Scene {
         }
     }
 
-    resize(gameSize) {
-        this.gameWidth = gameSize.width;
-        this.gameHeight = gameSize.height;
-        this.cameras.main.setSize(this.gameWidth, this.gameHeight);
+    checkGameOver() {
+        const alivePlayers = this.gameState.players.filter(player => {
+            return player.characters.some(charIndex => this.gameState.characterHealth[charIndex] > 0);
+        });
+        
+        if (alivePlayers.length <= 1) {
+            const winner = alivePlayers[0];
+            console.log(`Game Over! ${winner.name} wins!`);
+            
+            const gameOverText = this.add.text(this.gameWidth / 2, this.gameHeight / 2, `${winner.name} Wins!`, {
+                font: 'bold 48px Arial',
+                fill: '#ffffff'
+            });
+            gameOverText.setOrigin(0.5);
+            gameOverText.setStroke('#000000', 6);
+            
+            this.gameState.phase = 'gameOver';
+            if (this.turnTimer) {
+                this.turnTimer.remove();
+            }
+        }
     }
 }
