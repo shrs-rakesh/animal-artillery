@@ -1,0 +1,26 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    background: #1a1a2e;
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+}
+
+#game-container {
+    width: 100vw;
+    height: 100vh;
+    display: block; /* Change from flex to block */
+}
+
+/* Ensure canvas fills container */
+canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+}

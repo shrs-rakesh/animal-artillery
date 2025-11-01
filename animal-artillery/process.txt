@@ -1,0 +1,117 @@
+#!/bin/bash
+echo "Creating standard Phaser project structure..."
+
+mkdir -p animal-artillery
+cd animal-artillery
+
+mkdir -p css
+mkdir -p js/scenes
+mkdir -p js/entities
+mkdir -p js/utils
+mkdir -p assets/images/characters
+mkdir -p assets/images/terrain
+mkdir -p assets/images/ui
+mkdir -p assets/audio
+mkdir -p assets/data
+mkdir -p lib
+
+touch index.html
+touch css/style.css
+touch js/scenes/Boot.js
+touch js/scenes/Preloader.js
+touch js/scenes/Game.js
+touch js/main.js
+touch lib/phaser.min.js
+
+echo
+echo "Structure created successfully!"
+echo "Folders created:"
+echo "- css/"
+echo "- js/scenes/"
+echo "- js/entities/"
+echo "- js/utils/" 
+echo "- assets/images/characters/"
+echo "- assets/images/terrain/"
+echo "- assets/images/ui/"
+echo "- assets/audio/"
+echo "- assets/data/"
+echo "- lib/"
+
+
+
+
+Browser loads index.html
+    ↓
+Loads Phaser library from CDN
+    ↓
+Loads Boot.js → Minimal scene that immediately starts Game scene
+    ↓
+Loads Game.js → Main game logic with physics, characters, input
+    ↓
+Loads main.js → Creates Phaser game instance with configuration
+    ↓
+Phaser initializes and starts the game automatically
+
+
+
+CONSTRUCTOR → CREATE → UPDATE (repeats forever)
+
+
+
+index.html
+<!-- Loads everything in this order: -->
+Phaser Library → Boot Scene → Game Scene → Main Config
+
+
+main.js
+// This runs FIRST and tells Phaser:
+const config = {
+    width: window.innerWidth,    // Use full window
+    height: window.innerHeight,  // Use full window  
+    scale: Phaser.Scale.RESIZE,  // Auto-resize magic
+    scene: [Boot, Game]          // Scenes to load (in order)
+};
+
+
+boot.js
+class Boot extends Phaser.Scene {
+    create() {
+        // Immediately switches to Game scene
+        this.scene.start('Game');
+    }
+}
+
+
+game.js
+class Game extends Phaser.Scene {
+    create() {
+        // RUNS ONCE: Setup game world
+        this.setupWorld();      // Physics bounds
+        this.createAnimals();   // Characters
+        this.setupInput();      // Keyboard controls
+        this.addInstructions(); // UI text
+    }
+
+    update() {
+        // RUNS 60 TIMES/SECOND: Game loop
+        // Empty now, but this is for continuous logic
+    }
+}
+
+
+physics system
+this.physics.world.setBounds(0, 0, width, height); // Game area
+this.physics.add.existing(object); // Make object physical
+object.body.setBounce(0.3);        // Bounce on collision
+
+input system
+this.spacebar.on('down', () => {
+    this.cat.body.setVelocityY(-400); // Apply force upward
+});
+
+
+rendering system
+this.add.circle(x, y, radius, color);    // Draw circle
+this.add.rectangle(x, y, w, h, color);   // Draw rectangle  
+this.add.text(x, y, 'Hello', style);     // Draw text
+    
